@@ -1,0 +1,19 @@
+# Node modules locaux
+node_modules
+npm-debug.log
+
+# Logs et fichiers temporaires
+*.log
+tmp/
+temp/
+
+# Configurations locales
+.env
+.vscode/
+.idea/
+
+# Tests et docs lourds
+tests/
+docs/
+
+# Tout ce qui est inutile dans l'image

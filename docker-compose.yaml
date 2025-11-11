@@ -9,6 +9,8 @@ services:
       MYSQL_PASSWORD: ${DB_PASSWORD}
     volumes:
       - db_data:/var/lib/mysql
+    networks:
+      - crud-network
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
@@ -27,11 +29,37 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
       LOG_DIR: ${LOG_DIR}
+    networks:
+      - crud-network
     volumes:
       - ./logs:/var/logs/crud
     ports:
       - "8080:80"
     restart: unless-stopped
 
+  fluent-bit:
+    image: fluent/fluent-bit:4.0.13
+    depends_on:
+      - app
+    volumes:
+      - ./logs:/var/logs/crud:ro
+      - ./fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./parsers.conf:/fluent-bit/etc/parsers.conf:ro
+    ports:
+      - "2020:2020"
+    networks:
+      - crud-network
+    restart: unless-stopped
+    environment:
+      - HOSTNAME=${HOSTNAME:-docker-host}
+      - LOKI_HOST=${LOKI_HOST:-34.22.157.187}
+      - LOKI_PORT=${LOKI_PORT:-3100}
+      - LOKI_JOB_LABEL=${LOKI_JOB_LABEL:-crud-api}
+
+
 volumes:
   db_data:
+
+networks:
+  crud-network:
+    driver: bridge

@@ -1,7 +1,7 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
 const { v4: uuidv4 } = require('uuid');
-const fs = require('fs');
+const fs = require('fs').promises;
 const path = require('path');
 
 const app = express();
@@ -9,179 +9,544 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-const logDir = process.env.LOG_DIR || "/var/logs/crud";
-if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-}
-const appLog = path.join(logDir, 'app.log');
-
-function log(level, message, context = {}) {
-    const entry = {
-        timestamp: new Date().toISOString(),
-        level,
-        message,
-        ...context
-    };
-    fs.appendFile(appLog, JSON.stringify(entry) + '\n', (err) => {
-        if (level === 'error') console.error(entry);
-        else console.log(entry);
-    });
-}
-
 const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'crud_app'
+	host: process.env.DB_HOST || 'db',
+	user: process.env.DB_USER || 'root',
+	password: process.env.DB_PASSWORD || '',
+	database: process.env.DB_NAME || 'crud_app'
 };
 
-// Pool de connexions
+const LOG_DIR = '/var/logs/crud';
+const APP_LOG_FILE = path.join(LOG_DIR, 'app.log');
+
 let pool;
 
-// Initialisation de la base de données
+async function log(level, message, context = {}, processingTime = null) {
+	const timestamp = new Date().toISOString();
+	const logEntry = {
+		timestamp,
+		level,
+		message,
+		context,
+		...(processingTime !== null && { processing_time_ms: processingTime })
+	};
+
+	const logLine = JSON.stringify(logEntry) + '\n';
+
+	try {
+		await fs.mkdir(LOG_DIR, { recursive: true });
+		await fs.appendFile(APP_LOG_FILE, logLine);
+		console.log(`[${level}] ${message}`, context);
+	} catch (error) {
+		console.error('Erreur lors de l\'écriture du log:', error);
+	}
+}
+
+app.use((req, res, next) => {
+	req.startTime = Date.now();
+	next();
+});
+
 async function initDatabase() {
-    try {
-        pool = mysql.createPool(dbConfig);
+	try {
+		await log('INFO', 'Tentative de connexion à la base de données', { 
+			config: { host: dbConfig.host, database: dbConfig.database } 
+		});
+		
+		pool = mysql.createPool(dbConfig);
+		await pool.execute('SELECT 1');
 
-        // Création de la table users si elle n'existe pas
-        await pool.execute(`
-      CREATE TABLE IF NOT EXISTS users (
-        uuid VARCHAR(36) PRIMARY KEY,
-        fullname VARCHAR(255) NOT NULL,
-        study_level VARCHAR(255) NOT NULL,
-        age INT NOT NULL
-      )
-    `);
+    await pool.execute(`
+			CREATE TABLE IF NOT EXISTS users (
+				uuid VARCHAR(36) PRIMARY KEY,
+				fullname VARCHAR(255) NOT NULL,
+				study_level VARCHAR(255) NOT NULL,
+				age INT NOT NULL,
+				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+				updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+			)
+		`);
 
-        console.log('Base de données initialisée');
-    } catch (error) {
-        console.error('Erreur initialisation DB:', error);
-    }
+		await log('INFO', 'Base de données initialisée avec succès', { table: 'users' });
+	} catch (error) {
+		await log('ERROR', 'Erreur lors de l\'initialisation de la base de données', { 
+			error: error.message,
+			code: error.code 
+		});
+		throw error;
+	}
 }
 
-// Validation des données utilisateur 
 function validateUser(userData) {
-    if (!userData) return false;
-    const { fullname, study_level, age } = userData;
-    if (!fullname || typeof fullname !== 'string') return false;
-    if (!study_level || typeof study_level !== 'string') return false;
-    if (!age || isNaN(age)) return false;
-    return true;
+	const { fullname, study_level, age } = userData;
+	const errors = [];
+
+	if (!fullname || typeof fullname !== 'string' || fullname.trim() === '') {
+		errors.push('fullname est requis et doit être une chaîne non vide');
+	}
+
+	if (!study_level || typeof study_level !== 'string' || study_level.trim() === '') {
+		errors.push('study_level est requis et doit être une chaîne non vide');
+	}
+
+	if (age === undefined || age === null) {
+		errors.push('age est requis');
+	} else if (typeof age !== 'number' || !Number.isInteger(age)) {
+		errors.push('age doit être un nombre entier');
+	} else if (age < 0 || age > 150) {
+		errors.push('age doit être entre 0 et 150');
+	}
+
+	return {
+		isValid: errors.length === 0,
+		errors
+	};
 }
 
-// Routes API
+app.get('/api/users', async (req, res) => {
+	const startTime = Date.now();
+	const delay = parseInt(req.query.delay) || 0;
+	
+	try {
+		await log('INFO', 'Récupération de la liste des utilisateurs', { 
+			endpoint: '/api/users',
+			method: 'GET',
+			delay
+		});
 
-// GET /api/users
-app.get('/api/users', async(req, res) => {
-    try {
-        const [rows] = await pool.execute('SELECT * FROM users');
-        log('info', 'Listes des utilisateurs récupérée', { endpoint: 'GET /api/users', count: rows.length });
-        res.json(rows);
-    } catch (error) {
-        log('error', 'Erreur lors de la récupération des utilisateurs GET /api/users', { error });
-        res.status(500).json({ error: 'Erreur interne du serveur' });
-    }
+		if (delay > 0) {
+			await new Promise(resolve => setTimeout(resolve, delay));
+		}
+
+		const [rows] = await pool.execute('SELECT * FROM users ORDER BY created_at DESC');
+		const processingTime = Date.now() - startTime;
+		
+		await log('INFO', 'Liste des utilisateurs récupérée avec succès', { 
+			endpoint: '/api/users',
+			method: 'GET',
+			count: rows.length
+		}, processingTime);
+
+		res.status(200).json({
+			success: true,
+			count: rows.length,
+			data: rows
+		});
+	} catch (error) {
+		const processingTime = Date.now() - startTime;
+		
+		await log('ERROR', 'Erreur lors de la récupération des utilisateurs', { 
+			endpoint: '/api/users',
+			method: 'GET',
+			error: error.message,
+			code: error.code
+		}, processingTime);
+
+		res.status(500).json({ 
+			success: false,
+			error: 'Erreur serveur lors de la récupération des utilisateurs' 
+		});
+	}
 });
 
-// GET /api/users/:uuid
-app.get('/api/users/:uuid', async(req, res) => {
-    try {
-        const { uuid } = req.params;
-        const [rows] = await pool.execute('SELECT * FROM users WHERE uuid = ?', [uuid]);
+app.get('/api/users/:uuid', async (req, res) => {
+	const startTime = Date.now();
+	const { uuid } = req.params;
+	const delay = parseInt(req.query.delay) || 0;
+	
+	try {
+		await log('INFO', 'Récupération d\'un utilisateur', { 
+			endpoint: '/api/users/:uuid',
+			method: 'GET',
+			uuid,
+			delay
+		});
 
-        if (rows.length === 0) {
-            return res.status(404).json({ endpoint: `GET /api/users/${uuid}`, error: 'Utilisateur non trouvé' });
-        }
-        log('info', 'Utilisateur récupéré', { endpoint: `GET /api/users/${uuid}`, uuid });
-        res.json(rows[0]);
-    } catch (error) {
-        log('error', 'Erreur lors de la récupération de l\'utilisateur GET /api/users/:uuid', { endpoint: `GET /api/users/${uuid}`, error });
-        res.status(500).json({ error: 'Erreur interne du serveur' });
-    }
+		if (delay > 0) {
+			await new Promise(resolve => setTimeout(resolve, delay));
+		}
+
+		const [rows] = await pool.execute('SELECT * FROM users WHERE uuid = ?', [uuid]);
+
+		if (rows.length === 0) {
+			const processingTime = Date.now() - startTime;
+			
+			await log('WARN', 'Utilisateur non trouvé', { 
+				endpoint: '/api/users/:uuid',
+				method: 'GET',
+				uuid,
+				status: 404
+			}, processingTime);
+
+			return res.status(404).json({ 
+				success: false,
+				error: 'Utilisateur non trouvé' 
+			});
+		}
+
+		const processingTime = Date.now() - startTime;
+		
+		await log('INFO', 'Utilisateur récupéré avec succès', { 
+			endpoint: '/api/users/:uuid',
+			method: 'GET',
+			uuid
+		}, processingTime);
+
+		res.status(200).json({
+			success: true,
+			data: rows[0]
+		});
+	} catch (error) {
+		const processingTime = Date.now() - startTime;
+		
+		await log('ERROR', 'Erreur lors de la récupération de l\'utilisateur', { 
+			endpoint: '/api/users/:uuid',
+			method: 'GET',
+			uuid,
+			error: error.message,
+			code: error.code
+		}, processingTime);
+
+		res.status(500).json({ 
+			success: false,
+			error: 'Erreur serveur lors de la récupération de l\'utilisateur' 
+		});
+	}
 });
 
-// POST /api/users
-app.post('/api/users', async(req, res) => {
-    try {
-        const { fullname, study_level, age } = req.body;
-        if (!validateUser(req.body)) {
-            log('warn', 'Validation échouée pour la création d\'utilisateur', { endpoint: `POST /api/users`, data: req.body });
-            return res.status(400).json({ error: 'Données utilisateur invalides' });
-        }
-        const uuid = uuidv4();
+app.post('/api/users', async (req, res) => {
+	const startTime = Date.now();
+	const delay = parseInt(req.query.delay) || 0;
+	
+	try {
+		const { fullname, study_level, age } = req.body;
 
-        await pool.execute(
-            'INSERT INTO users (uuid, fullname, study_level, age) VALUES (?, ?, ?, ?)', [uuid, fullname, study_level, age]
-        );
-        const newUser = { uuid, fullname, study_level, age: Number(age) };
-        log('info', 'Utilisateur créé', { endpoint: `POST /api/users`, uuid });
-        res.status(201).json(newUser);
+		await log('INFO', 'Tentative de création d\'un utilisateur', { 
+			endpoint: '/api/users',
+			method: 'POST',
+			data: { fullname, study_level, age },
+			delay
+		});
 
-    } catch (error) {
-        log('error', 'Erreur lors de la création de l\'utilisateur POST /api/users', { endpoint: `POST /api/users`, error });
-        res.status(500).json({ error: 'Erreur interne du serveur' });
-    }
+		if (delay > 0) {
+			await new Promise(resolve => setTimeout(resolve, delay));
+		}
+
+		const validation = validateUser(req.body);
+		if (!validation.isValid) {
+			const processingTime = Date.now() - startTime;
+			
+			await log('WARN', 'Validation échouée lors de la création', { 
+				endpoint: '/api/users',
+				method: 'POST',
+				errors: validation.errors,
+				status: 400
+			}, processingTime);
+
+			return res.status(400).json({ 
+				success: false,
+				error: 'Données invalides',
+				details: validation.errors
+			});
+		}
+
+		const uuid = uuidv4();
+
+		await pool.execute(
+			'INSERT INTO users (uuid, fullname, study_level, age) VALUES (?, ?, ?, ?)',
+			[uuid, fullname, study_level, age]
+		);
+
+		const newUser = { uuid, fullname, study_level, age };
+		const processingTime = Date.now() - startTime;
+		
+		await log('INFO', 'Utilisateur créé avec succès', { 
+			endpoint: '/api/users',
+			method: 'POST',
+			uuid
+		}, processingTime);
+
+		res.status(201).json({
+			success: true,
+			message: 'Utilisateur créé avec succès',
+			data: newUser
+		});
+	} catch (error) {
+		const processingTime = Date.now() - startTime;
+		
+		await log('ERROR', 'Erreur lors de la création de l\'utilisateur', { 
+			endpoint: '/api/users',
+			method: 'POST',
+			error: error.message,
+			code: error.code
+		}, processingTime);
+
+		res.status(500).json({ 
+			success: false,
+			error: 'Erreur serveur lors de la création de l\'utilisateur' 
+		});
+	}
 });
 
-// PUT /api/users/:uuid
-app.put('/api/users/:uuid', async(req, res) => {
-    try {
-        const { uuid } = req.params;
-        const { fullname, study_level, age } = req.body;
-        if (!validateUser(req.body)) {
-            log('warn', 'Validation échouée pour la mise à jour d\'utilisateur', { endpoint: `PUT /api/users/${uuid}`, data: req.body });
-            return res.status(400).json({ error: 'Données utilisateur invalides' });
-        }
-        const result = await pool.execute(
-            'UPDATE users SET fullname = ?, study_level = ?, age = ? WHERE uuid = ?', [fullname, study_level, age, uuid]
-        );
-        log('info', 'Utilisateur mis à jour', { uuid });
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ error: 'Utilisateur non trouvé' });
-        }
-        const updatedUser = { uuid, fullname, study_level, age };
-        res.json(updatedUser);
+app.put('/api/users/:uuid', async (req, res) => {
+	const startTime = Date.now();
+	const { uuid } = req.params;
+	const delay = parseInt(req.query.delay) || 0;
+	
+	try {
+		const { fullname, study_level, age } = req.body;
 
-    } catch (error) {
-        log('error', 'Erreur lors de la mise à jour de l\'utilisateur PUT /api/users/:uuid', { endpoint: `PUT /api/users/${uuid}`, error });
-        res.status(500).json({ error: 'Erreur interne du serveur' });
-    }
+		await log('INFO', 'Tentative de mise à jour d\'un utilisateur', { 
+			endpoint: '/api/users/:uuid',
+			method: 'PUT',
+			uuid,
+			data: { fullname, study_level, age },
+			delay
+		});
+
+		if (delay > 0) {
+			await new Promise(resolve => setTimeout(resolve, delay));
+		}
+
+		const validation = validateUser(req.body);
+		if (!validation.isValid) {
+			const processingTime = Date.now() - startTime;
+			
+			await log('WARN', 'Validation échouée lors de la mise à jour', { 
+				endpoint: '/api/users/:uuid',
+				method: 'PUT',
+				uuid,
+				errors: validation.errors,
+				status: 400
+			}, processingTime);
+
+			return res.status(400).json({ 
+				success: false,
+				error: 'Données invalides',
+				details: validation.errors
+			});
+		}
+
+		const [checkRows] = await pool.execute('SELECT uuid FROM users WHERE uuid = ?', [uuid]);
+		
+		if (checkRows.length === 0) {
+			const processingTime = Date.now() - startTime;
+			
+			await log('WARN', 'Utilisateur non trouvé lors de la mise à jour', { 
+				endpoint: '/api/users/:uuid',
+				method: 'PUT',
+				uuid,
+				status: 404
+			}, processingTime);
+
+			return res.status(404).json({ 
+				success: false,
+				error: 'Utilisateur non trouvé' 
+			});
+		}
+
+		await pool.execute(
+			'UPDATE users SET fullname = ?, study_level = ?, age = ? WHERE uuid = ?',
+			[fullname, study_level, age, uuid]
+		);
+
+		const updatedUser = { uuid, fullname, study_level, age };
+		const processingTime = Date.now() - startTime;
+		
+		await log('INFO', 'Utilisateur mis à jour avec succès', { 
+			endpoint: '/api/users/:uuid',
+			method: 'PUT',
+			uuid
+		}, processingTime);
+
+		res.status(200).json({
+			success: true,
+			message: 'Utilisateur mis à jour avec succès',
+			data: updatedUser
+		});
+	} catch (error) {
+		const processingTime = Date.now() - startTime;
+		
+		await log('ERROR', 'Erreur lors de la mise à jour de l\'utilisateur', { 
+			endpoint: '/api/users/:uuid',
+			method: 'PUT',
+			uuid,
+			error: error.message,
+			code: error.code
+		}, processingTime);
+
+		res.status(500).json({ 
+			success: false,
+			error: 'Erreur serveur lors de la mise à jour de l\'utilisateur' 
+		});
+	}
 });
 
-// DELETE /api/users/:uuid
-app.delete('/api/users/:uuid', async(req, res) => {
-    try {
-        const { uuid } = req.params;
+app.delete('/api/users/:uuid', async (req, res) => {
+	const startTime = Date.now();
+	const { uuid } = req.params;
+	const delay = parseInt(req.query.delay) || 0;
+	
+	try {
+		await log('INFO', 'Tentative de suppression d\'un utilisateur', { 
+			endpoint: '/api/users/:uuid',
+			method: 'DELETE',
+			uuid,
+			delay
+		});
 
-        const result = await pool.execute('DELETE FROM users WHERE uuid = ?', [uuid]);
-        log('info', 'Utilisateur supprimé', { endpoint: `DELETE /api/users/${uuid}` });
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ error: 'Utilisateur non trouvé' });
-        }
-        res.json({ message: 'Utilisateur supprimé' });
+		if (delay > 0) {
+			await new Promise(resolve => setTimeout(resolve, delay));
+		}
 
-    } catch (error) {
-        log('error', 'Erreur lors de la suppression de l\'utilisateur DELETE /api/users/:uuid', { endpoint: `DELETE /api/users/${uuid}`, error });
-        res.status(500).json({ error: 'Erreur interne du serveur' });
-    }
+		const [result] = await pool.execute('DELETE FROM users WHERE uuid = ?', [uuid]);
+
+		if (result.affectedRows === 0) {
+			const processingTime = Date.now() - startTime;
+			
+			await log('WARN', 'Utilisateur non trouvé lors de la suppression', { 
+				endpoint: '/api/users/:uuid',
+				method: 'DELETE',
+				uuid,
+				status: 404
+			}, processingTime);
+
+			return res.status(404).json({ 
+				success: false,
+				error: 'Utilisateur non trouvé' 
+			});
+		}
+
+		const processingTime = Date.now() - startTime;
+		
+		await log('INFO', 'Utilisateur supprimé avec succès', { 
+			endpoint: '/api/users/:uuid',
+			method: 'DELETE',
+			uuid
+		}, processingTime);
+
+		res.status(200).json({ 
+			success: true,
+			message: 'Utilisateur supprimé avec succès' 
+		});
+	} catch (error) {
+		const processingTime = Date.now() - startTime;
+		
+		await log('ERROR', 'Erreur lors de la suppression de l\'utilisateur', { 
+			endpoint: '/api/users/:uuid',
+			method: 'DELETE',
+			uuid,
+			error: error.message,
+			code: error.code
+		}, processingTime);
+
+		res.status(500).json({ 
+			success: false,
+			error: 'Erreur serveur lors de la suppression de l\'utilisateur' 
+		});
+	}
 });
 
-// GET /health
-app.get('/health', async(req, res) => {
-    try {
-        await pool.execute('SELECT 1');
-        log('info', 'Health check réussi', { endpoint: '/health' });
-        res.json({ status: 'OK', database: 'connected' });
-    } catch (error) {
-        log('error', 'Health check échoué', { endpoint: '/health', error });
-        res.status(500).json({ status: 'ERROR', database: 'disconnected' });
-    }
+app.get('/health', async (req, res) => {
+	const startTime = Date.now();
+	const delay = parseInt(req.query.delay) || 0;
+	
+	try {
+		await log('INFO', 'Health check demandé', { 
+			endpoint: '/health',
+			method: 'GET',
+			delay
+		});
+
+		if (delay > 0) {
+			await new Promise(resolve => setTimeout(resolve, delay));
+		}
+
+		await pool.execute('SELECT 1');
+		const processingTime = Date.now() - startTime;
+		
+		await log('INFO', 'Health check réussi', { 
+			endpoint: '/health',
+			method: 'GET',
+			status: 'healthy'
+		}, processingTime);
+
+		res.status(200).json({
+			success: true,
+			status: 'healthy',
+			timestamp: new Date().toISOString(),
+			services: {
+				api: 'operational',
+				database: 'operational'
+			}
+		});
+	} catch (error) {
+		const processingTime = Date.now() - startTime;
+		
+		await log('ERROR', 'Health check échoué', { 
+			endpoint: '/health',
+			method: 'GET',
+			error: error.message,
+			code: error.code,
+			status: 'unhealthy'
+		}, processingTime);
+
+		res.status(503).json({
+			success: false,
+			status: 'unhealthy',
+			timestamp: new Date().toISOString(),
+			services: {
+				api: 'operational',
+				database: 'unavailable'
+			},
+			error: 'Database connection failed'
+		});
+	}
 });
 
-// Point d'entrée de l'application
-app.listen(PORT, async() => {
-    await initDatabase();
-    console.log(`Serveur démarré sur le port ${PORT}`);
-    console.log(`Health check: http://localhost:${PORT}/health`);
-    console.log(`API Users: http://localhost:${PORT}/api/users`);
+app.use((req, res) => {
+	log('WARN', 'Route non trouvée', { 
+		endpoint: req.path,
+		method: req.method,
+		status: 404
+	});
+
+	res.status(404).json({ 
+		success: false,
+		error: 'Route non trouvée' 
+	});
+});
+
+app.listen(PORT, async () => {
+	try {
+		await initDatabase();
+		await log('INFO', 'Application démarrée avec succès', { 
+			port: PORT,
+			environment: process.env.NODE_ENV || 'development'
+		});
+		
+		console.log(`\nServeur démarré sur le port ${PORT}`);
+		console.log(`Health check: http://localhost:${PORT}/health`);
+		console.log(`API Users: http://localhost:${PORT}/api/users`);
+		console.log(`Logs: ${APP_LOG_FILE}\n`);
+	} catch (error) {
+		console.error('Erreur fatale au démarrage:', error);
+		process.exit(1);
+	}
+});
+
+process.on('SIGTERM', async () => {
+	await log('INFO', 'Signal SIGTERM reçu, arrêt de l\'application');
+	if (pool) {
+		await pool.end();
+	}
+	process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+	await log('INFO', 'Signal SIGINT reçu, arrêt de l\'application');
+	if (pool) {
+		await pool.end();
+	}
+	process.exit(0);
 });
