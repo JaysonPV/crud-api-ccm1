@@ -9,10 +9,8 @@ export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-key.json
 
 echo "Démarrage de Cloud SQL Proxy..."
 /usr/local/bin/cloud_sql_proxy \
-    --credentials-file=/tmp/gcp-key.json \
-    --address=0.0.0.0 \
-    --port=3306 \
-    "$DB_INSTANCE_CONNECTION_NAME" &
+    -credential_file=/tmp/gcp-key.json \
+    -instances="${DB_INSTANCE_CONNECTION_NAME}=tcp:3306" &
 
 PROXY_PID=$!
 
