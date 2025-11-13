@@ -18,6 +18,8 @@ COPY . .
 # Donner les droits d'exécution à start.sh
 RUN chmod +x start.sh
 
+USER appuser
+
 # Expose le port (sera remplacé par la variable PORT de Cloud Run)
 EXPOSE 8080
 
