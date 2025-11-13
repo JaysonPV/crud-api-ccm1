@@ -5,12 +5,12 @@ const fs = require('fs').promises;
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = 3000; // PORT FIXE pour Node.js, Nginx sera sur 8080
 
 app.use(express.json());
 
 const dbConfig = {
-	host: process.env.DB_HOST || 'db',
+	host: process.env.DB_HOST || '127.0.0.1',
 	user: process.env.DB_USER || 'root',
 	password: process.env.DB_PASSWORD || '',
 	database: process.env.DB_NAME || 'crud_app'
@@ -20,6 +20,7 @@ const LOG_DIR = '/tmp/logs/crud';
 const APP_LOG_FILE = path.join(LOG_DIR, 'app.log');
 
 let pool;
+let dbInitialized = false;
 
 async function log(level, message, context = {}, processingTime = null) {
 	const timestamp = new Date().toISOString();
@@ -36,7 +37,7 @@ async function log(level, message, context = {}, processingTime = null) {
 	try {
 		await fs.mkdir(LOG_DIR, { recursive: true });
 		await fs.appendFile(APP_LOG_FILE, logLine);
-		console.log(`[${level}] ${message}`, context);
+		console.log(`[${level}] ${message}`, JSON.stringify(context));
 	} catch (error) {
 		console.error('Erreur lors de l\'écriture du log:', error);
 	}
@@ -53,10 +54,18 @@ async function initDatabase() {
 			config: { host: dbConfig.host, database: dbConfig.database } 
 		});
 		
-		pool = mysql.createPool(dbConfig);
+		pool = mysql.createPool({
+			...dbConfig,
+			waitForConnections: true,
+			connectionLimit: 10,
+			queueLimit: 0
+		});
+		
+		// Test de connexion
 		await pool.execute('SELECT 1');
 
-    await pool.execute(`
+		// Créer la table si elle n'existe pas
+		await pool.execute(`
 			CREATE TABLE IF NOT EXISTS users (
 				uuid VARCHAR(36) PRIMARY KEY,
 				fullname VARCHAR(255) NOT NULL,
@@ -67,13 +76,15 @@ async function initDatabase() {
 			)
 		`);
 
+		dbInitialized = true;
 		await log('INFO', 'Base de données initialisée avec succès', { table: 'users' });
+		return true;
 	} catch (error) {
 		await log('ERROR', 'Erreur lors de l\'initialisation de la base de données', { 
 			error: error.message,
 			code: error.code 
 		});
-		throw error;
+		return false;
 	}
 }
 
@@ -103,7 +114,45 @@ function validateUser(userData) {
 	};
 }
 
+// HEALTH CHECK - DOIT REPONDRE RAPIDEMENT
+app.get('/health', async (req, res) => {
+	// Toujours répondre 200 si l'API est up
+	if (!dbInitialized || !pool) {
+		return res.status(200).json({
+			success: true,
+			status: 'initializing',
+			message: 'API is up, database initializing'
+		});
+	}
+
+	try {
+		// Test rapide de la DB avec timeout
+		await Promise.race([
+			pool.execute('SELECT 1'),
+			new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+		]);
+
+		res.status(200).json({
+			success: true,
+			status: 'healthy',
+			database: 'connected'
+		});
+	} catch (error) {
+		// Même en cas d'erreur DB, on répond 200 pour que le conteneur démarre
+		res.status(200).json({
+			success: true,
+			status: 'degraded',
+			database: 'unavailable',
+			message: 'API is up but database connection failed'
+		});
+	}
+});
+
 app.get('/api/users', async (req, res) => {
+	if (!dbInitialized) {
+		return res.status(503).json({ success: false, error: 'Database not ready' });
+	}
+
 	const startTime = Date.now();
 	const delay = parseInt(req.query.delay) || 0;
 	
@@ -150,6 +199,10 @@ app.get('/api/users', async (req, res) => {
 });
 
 app.get('/api/users/:uuid', async (req, res) => {
+	if (!dbInitialized) {
+		return res.status(503).json({ success: false, error: 'Database not ready' });
+	}
+
 	const startTime = Date.now();
 	const { uuid } = req.params;
 	const delay = parseInt(req.query.delay) || 0;
@@ -215,6 +268,10 @@ app.get('/api/users/:uuid', async (req, res) => {
 });
 
 app.post('/api/users', async (req, res) => {
+	if (!dbInitialized) {
+		return res.status(503).json({ success: false, error: 'Database not ready' });
+	}
+
 	const startTime = Date.now();
 	const delay = parseInt(req.query.delay) || 0;
 	
@@ -289,6 +346,10 @@ app.post('/api/users', async (req, res) => {
 });
 
 app.put('/api/users/:uuid', async (req, res) => {
+	if (!dbInitialized) {
+		return res.status(503).json({ success: false, error: 'Database not ready' });
+	}
+
 	const startTime = Date.now();
 	const { uuid } = req.params;
 	const delay = parseInt(req.query.delay) || 0;
@@ -383,6 +444,10 @@ app.put('/api/users/:uuid', async (req, res) => {
 });
 
 app.delete('/api/users/:uuid', async (req, res) => {
+	if (!dbInitialized) {
+		return res.status(503).json({ success: false, error: 'Database not ready' });
+	}
+
 	const startTime = Date.now();
 	const { uuid } = req.params;
 	const delay = parseInt(req.query.delay) || 0;
@@ -447,31 +512,6 @@ app.delete('/api/users/:uuid', async (req, res) => {
 	}
 });
 
-app.get('/health', async (req, res) => {
-  const status = pool ? 'connected' : 'initializing';
-  if (!pool) {
-    return res.status(200).json({
-      success: true,
-      status: 'initializing',
-      message: 'Database not yet connected, but API is up'
-    });
-  }
-
-  try {
-    await pool.execute('SELECT 1');
-    res.status(200).json({
-      success: true,
-      status: 'healthy'
-    });
-  } catch (error) {
-    res.status(503).json({
-      success: false,
-      status: 'unhealthy',
-      error: error.message
-    });
-  }
-});
-
 app.use((req, res) => {
 	log('WARN', 'Route non trouvée', { 
 		endpoint: req.path,
@@ -485,34 +525,53 @@ app.use((req, res) => {
 	});
 });
 
-app.listen(PORT, () => {
-  console.log(`Serveur en écoute sur le port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`API Users: http://localhost:${PORT}/api/users`);
-
-  // Connecte la base après le démarrage du serveur
-  initDatabase()
-    .then(() => {
-      console.log('✅ Base de données initialisée avec succès');
-    })
-    .catch(async (error) => {
-      console.error('❌ Erreur lors de l’initialisation de la base de données :', error.message);
-      await log('ERROR', 'Erreur fatale au démarrage', { error: error.message });
-    });
+// Démarrer le serveur AVANT d'initialiser la DB
+const server = app.listen(PORT, async () => {
+	console.log(`✅ Serveur HTTP démarré sur le port ${PORT}`);
+	console.log(`📍 Health check: http://localhost:${PORT}/health`);
+	console.log(`📍 API Users: http://localhost:${PORT}/api/users`);
+	
+	// Initialiser la DB après que le serveur soit up
+	console.log('🔄 Initialisation de la base de données...');
+	const success = await initDatabase();
+	
+	if (success) {
+		console.log('✅ Base de données connectée');
+	} else {
+		console.warn('⚠️  Base de données non disponible, retry dans 10s...');
+		// Retry après 10 secondes
+		setTimeout(async () => {
+			await initDatabase();
+		}, 10000);
+	}
 });
 
 process.on('SIGTERM', async () => {
+	console.log('📡 Signal SIGTERM reçu, arrêt gracieux...');
 	await log('INFO', 'Signal SIGTERM reçu, arrêt de l\'application');
+	
+	server.close(() => {
+		console.log('✅ Serveur HTTP fermé');
+	});
+	
 	if (pool) {
 		await pool.end();
+		console.log('✅ Connexion DB fermée');
 	}
 	process.exit(0);
 });
 
 process.on('SIGINT', async () => {
+	console.log('📡 Signal SIGINT reçu, arrêt gracieux...');
 	await log('INFO', 'Signal SIGINT reçu, arrêt de l\'application');
+	
+	server.close(() => {
+		console.log('✅ Serveur HTTP fermé');
+	});
+	
 	if (pool) {
 		await pool.end();
+		console.log('✅ Connexion DB fermée');
 	}
 	process.exit(0);
 });

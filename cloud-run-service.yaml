@@ -7,7 +7,6 @@ metadata:
   annotations:
     run.googleapis.com/ingress: all
     run.googleapis.com/ingress-status: all
-    run.googleapis.com/launch-stage: BETA
 spec:
   template:
     metadata:
@@ -25,8 +24,10 @@ spec:
         image: docker.io/{{DOCKERHUB_USERNAME}}/crud-api:{{VERSION}}
         ports:
         - name: http1
-          containerPort: 8080
+          containerPort: 80
         env:
+        - name: PORT
+          value: "3000"
         - name: DB_HOST
           value: "127.0.0.1"  # Via Cloud SQL Proxy
         - name: DB_NAME
@@ -46,7 +47,7 @@ spec:
         startupProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 80
           initialDelaySeconds: 10
           periodSeconds: 5
           timeoutSeconds: 3
@@ -54,14 +55,14 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 80
           periodSeconds: 30
           timeoutSeconds: 3
           failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 80
           periodSeconds: 10
           timeoutSeconds: 3
           failureThreshold: 3
@@ -80,6 +81,8 @@ spec:
           limits:
             cpu: "250m"
             memory: "256Mi"
+        securityContext:
+          runAsNonRoot: true
 
       # Conteneur sidecar - Fluent Bit pour les logs
       - name: fluent-bit
@@ -92,7 +95,9 @@ spec:
         - name: LOKI_JOB_LABEL
           value: "crud-api-cloudrun"
         - name: HOSTNAME
-          value: "crud-api-cloudrun"
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         resources:
           limits:
             cpu: "250m"

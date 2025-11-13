@@ -1,15 +1,21 @@
 #!/bin/bash
 set -e
 
-# Créer le répertoire logs si n'existe pas
+# Créer les répertoires logs
 mkdir -p /var/logs/crud
+mkdir -p /tmp/logs/crud
 
-# Définir le port par défaut si non défini (pour compatibilité locale)
-export PORT=${PORT:-80}
+# Définir le port par défaut si non défini
+export PORT=${PORT:-8080}
+export NODE_PORT=3000
+
+echo "Configuration: PORT=${PORT}, NODE_PORT=${NODE_PORT}"
 
 # Générer la configuration Nginx avec le bon port
 cat > /etc/nginx/nginx.conf <<EOF
-events {}
+events {
+    worker_connections 1024;
+}
 
 http {
     # Format JSON pour access.log
@@ -20,46 +26,79 @@ http {
     access_log /var/logs/crud/access.log json_combined;
     error_log /var/logs/crud/error.log warn;
 
+    # Timeout plus long pour le health check
+    proxy_connect_timeout 30s;
+    proxy_send_timeout 30s;
+    proxy_read_timeout 30s;
+
     server {
         listen ${PORT};
+        server_name _;
 
-        # Intercepter les erreurs et les logger en JSON dans access.log aussi
+        # Intercepter les erreurs
         error_page 404 = @not_found;
         error_page 500 502 503 504 = @server_error;
 
         location @not_found {
-            access_log /var/logs/crud/access.log json_combined;
-            error_log /var/logs/crud/error.log warn;
             add_header Content-Type application/json;
-            return 404 '{"error":"Not Found","status":404}';
+            return 404 '{"success":false,"error":"Not Found","status":404}';
         }
 
         location @server_error {
-            access_log /var/logs/crud/access.log json_combined;
-            error_log /var/logs/crud/error.log warn;
             add_header Content-Type application/json;
-            return 500 '{"error":"Internal Server Error","status":500}';
+            return 500 '{"success":false,"error":"Internal Server Error","status":500}';
         }
 
+        # Proxy vers Node.js
         location / {
-            proxy_pass http://127.0.0.1:3000;
+            proxy_pass http://127.0.0.1:${NODE_PORT};
             proxy_set_header Host \$host;
             proxy_set_header X-Real-IP \$remote_addr;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+            
+            # Timeouts
+            proxy_connect_timeout 30s;
+            proxy_send_timeout 30s;
+            proxy_read_timeout 30s;
         }
     }
 }
 EOF
 
-echo "Nginx configuré pour écouter sur le port ${PORT}"
+echo "✅ Nginx configuré pour écouter sur le port ${PORT}"
 
-# Lancer l'application Node en arrière-plan
-echo "Démarrage de Node.js sur le port 3000..."
-nohup node index.js > /var/logs/crud/app.log 2>&1 &
+# Lancer l'application Node.js en arrière-plan
+echo "🚀 Démarrage de Node.js sur le port ${NODE_PORT}..."
+node index.js &
+NODE_PID=$!
 
-# Attendre que Node.js soit prêt
-sleep 2
+echo "⏳ Attente du démarrage de Node.js (PID: ${NODE_PID})..."
+
+# Attendre que Node.js soit prêt (max 30 secondes)
+MAX_WAIT=30
+COUNTER=0
+while [ $COUNTER -lt $MAX_WAIT ]; do
+    if curl -s http://127.0.0.1:${NODE_PORT}/health > /dev/null 2>&1; then
+        echo "✅ Node.js est prêt !"
+        break
+    fi
+    echo "⏳ Attente... ($COUNTER/$MAX_WAIT)"
+    sleep 1
+    COUNTER=$((COUNTER + 1))
+    
+    # Vérifier que Node.js tourne toujours
+    if ! kill -0 $NODE_PID 2>/dev/null; then
+        echo "❌ Node.js s'est arrêté prématurément"
+        exit 1
+    fi
+done
+
+if [ $COUNTER -eq $MAX_WAIT ]; then
+    echo "❌ Timeout: Node.js n'a pas démarré dans les temps"
+    exit 1
+fi
 
 # Lancer Nginx au premier plan
-echo "Démarrage de Nginx sur le port ${PORT}..."
-nginx -g "daemon off;"
+echo "🌐 Démarrage de Nginx sur le port ${PORT}..."
+exec nginx -g "daemon off;"

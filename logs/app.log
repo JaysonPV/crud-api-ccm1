@@ -1,0 +1,6 @@
+Serveur en écoute sur le port 3000
+Health check: http://localhost:3000/health
+API Users: http://localhost:3000/api/users
+[INFO] Tentative de connexion à la base de données { config: { host: 'db', database: 'crud_app' } }
+[INFO] Base de données initialisée avec succès { table: 'users' }
+✅ Base de données initialisée avec succès
