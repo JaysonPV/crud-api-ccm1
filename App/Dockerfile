@@ -6,7 +6,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Crée un utilisateur non-root
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN groupadd --system appgroup && \
+    useradd --system --gid appgroup --create-home --shell /bin/sh appuser
 
 # Création répertoire app
 WORKDIR /usr/src/app
