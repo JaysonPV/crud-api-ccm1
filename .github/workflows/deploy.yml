@@ -104,12 +104,40 @@ jobs:
 
       # 9. Déploiement sur Cloud Run
       - name: Deploy to Cloud Run
+        id: deploy
+        continue-on-error: true
         run: |
           gcloud run services replace cloud-run-service.yaml \
             --region=${{ secrets.GCP_REGION }}
           echo "Service deployed to Cloud Run"
+        
+      # 9b. Récupérer les logs en cas d'échec
+      - name: Get Cloud Run logs on failure
+        if: steps.deploy.outcome == 'failure'
+        run: |
+          echo "========================================="
+          echo "❌ Déploiement échoué - Récupération des logs..."
+          echo "========================================="
+          
+          sleep 5
+          
+          echo "📋 Logs du conteneur crud-api:"
+          gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=${{ env.CLOUD_RUN_SERVICE_NAME }} AND labels.\"run.googleapis.com/container_name\"=\"crud-api\"" \
+            --limit 50 \
+            --format "table(timestamp,severity,textPayload,jsonPayload.message)" \
+            --freshness 5m || true
+          
+          echo ""
+          echo "📋 Logs du Cloud SQL Proxy:"
+          gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=${{ env.CLOUD_RUN_SERVICE_NAME }} AND labels.\"run.googleapis.com/container_name\"=\"cloud-sql-proxy\"" \
+            --limit 30 \
+            --format "table(timestamp,severity,textPayload)" \
+            --freshness 5m || true
+          
+          exit 1
 
       - name: Allow unauthenticated access
+        if: steps.deploy.outcome == 'success'
         run: |
           gcloud run services add-iam-policy-binding ${{ env.CLOUD_RUN_SERVICE_NAME }} \
             --region=${{ secrets.GCP_REGION }} \
@@ -118,9 +146,15 @@ jobs:
           echo "Public access configured"
 
       - name: Get service URL
+        if: steps.deploy.outcome == 'success'
         run: |
           SERVICE_URL=$(gcloud run services describe ${{ env.CLOUD_RUN_SERVICE_NAME }} \
             --region=${{ secrets.GCP_REGION }} \
             --format='value(status.url)')
-          echo "Service deployed at: ${SERVICE_URL}"
+          echo "========================================="
+          echo "✅ Déploiement réussi !"
+          echo "========================================="
+          echo "Service URL: ${SERVICE_URL}"
           echo "Health check: ${SERVICE_URL}/health"
+          echo "API Users: ${SERVICE_URL}/api/users"
+          echo "========================================="
