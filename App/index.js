@@ -5,7 +5,7 @@ const fs = require('fs').promises;
 const path = require('path');
 
 const app = express();
-const PORT = 3000; // PORT FIXE pour Node.js, Nginx sera sur 8080
+const PORT = process.env.PORT || 8080;
 
 app.use(express.json());
 
