@@ -15,18 +15,15 @@ RUN npm install
 # Copier le code source
 COPY . .
 
-# Copier config Nginx
-COPY nginx.conf /etc/nginx/nginx.conf
-
 # Donner les droits d'exécution à start.sh
 RUN chmod +x start.sh
 
-# Expose port 80 pour Nginx
-EXPOSE 80
+# Expose le port (sera remplacé par la variable PORT de Cloud Run)
+EXPOSE 8080
 
-# Healthcheck
+# Healthcheck - utilise la variable PORT si définie, sinon 80
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost/health || exit 1
+  CMD curl -f http://localhost:${PORT:-80}/health || exit 1
 
 # Commande de démarrage
 CMD ["/bin/bash", "./start.sh"]

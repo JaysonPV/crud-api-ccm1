@@ -24,10 +24,8 @@ spec:
         image: docker.io/{{DOCKERHUB_USERNAME}}/crud-api:{{VERSION}}
         ports:
         - name: http1
-          containerPort: 80
+          containerPort: 8080
         env:
-        - name: PORT
-          value: "3000"
         - name: DB_HOST
           value: "127.0.0.1"  # Via Cloud SQL Proxy
         - name: DB_NAME
