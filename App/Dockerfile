@@ -5,6 +5,9 @@ RUN apt-get update && \
     apt-get install -y nginx curl && \
     rm -rf /var/lib/apt/lists/*
 
+# Crée un utilisateur non-root
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
 # Création répertoire app
 WORKDIR /usr/src/app
 
