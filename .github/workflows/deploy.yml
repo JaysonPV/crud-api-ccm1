@@ -1,0 +1,126 @@
+name: CI/CD Pipeline - Deploy to Cloud Run
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Déclenche sur les tags de version (ex: v1.0.0, v1.2.3)
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ secrets.GCP_REGION }}
+  CLOUD_RUN_SERVICE_NAME: crud-api
+  DB_INSTANCE_CONNECTION_NAME: ${{ secrets.DB_INSTANCE_CONNECTION_NAME }}
+  LOKI_HOST: ${{ secrets.LOKI_HOST }}
+  LOKI_PORT: ${{ secrets.LOKI_PORT }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. Récupération du code
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Nécessaire pour récupérer tous les tags
+
+      # 2. Extraction de la version depuis le tag Git
+      - name: Extract version from tag
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "Extracted version: ${VERSION}"
+
+      # 3. Connexion à Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 4. Build et push de l'image de l'API
+      - name: Build and push API image
+        run: |
+          cd App
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/crud-api:${{ steps.get_version.outputs.version }} .
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/crud-api:latest .
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/crud-api:${{ steps.get_version.outputs.version }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/crud-api:latest
+          echo "API image pushed successfully"
+
+      # 5. Build et push de l'image Fluent Bit personnalisée
+      - name: Build and push Fluent Bit image
+        run: |
+          docker build -f Dockerfile.fluentbit -t ${{ secrets.DOCKERHUB_USERNAME }}/fluent-bit-custom:${{ steps.get_version.outputs.version }} .
+          docker build -f Dockerfile.fluentbit -t ${{ secrets.DOCKERHUB_USERNAME }}/fluent-bit-custom:latest .
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/fluent-bit-custom:${{ steps.get_version.outputs.version }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/fluent-bit-custom:latest
+          echo "Fluent Bit image pushed successfully"
+
+      # 6. Configuration du SDK Google Cloud
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      # 7. Exécution des migrations de base de données
+      - name: Build migrations image
+        run: |
+          docker build -f Dockerfile.migrations -t migrations:${{ steps.get_version.outputs.version }} .
+
+      - name: Run database migrations
+        run: |
+          docker run --rm \
+            -e DB_INSTANCE_CONNECTION_NAME=${{ secrets.DB_INSTANCE_CONNECTION_NAME }} \
+            -e DB_NAME=${{ secrets.DB_NAME }} \
+            -e DB_USER=${{ secrets.DB_USER }} \
+            -e DB_PASSWORD=${{ secrets.DB_PASSWORD }} \
+            -e GCP_SA_KEY='${{ secrets.GCP_SA_KEY }}' \
+            migrations:${{ steps.get_version.outputs.version }}
+          echo "Migrations executed successfully"
+
+      # 8. Mise à jour du fichier de configuration Cloud Run
+      - name: Update Cloud Run service configuration
+        run: |
+          sed -i "s|{{VERSION}}|${{ steps.get_version.outputs.version }}|g" cloud-run-service.yaml
+          sed -i "s|{{DOCKERHUB_USERNAME}}|${{ secrets.DOCKERHUB_USERNAME }}|g" cloud-run-service.yaml
+          sed -i "s|{{GCP_PROJECT_ID}}|${{ secrets.GCP_PROJECT_ID }}|g" cloud-run-service.yaml
+          sed -i "s|{{GCP_REGION}}|${{ secrets.GCP_REGION }}|g" cloud-run-service.yaml
+          sed -i "s|{{DB_INSTANCE_CONNECTION_NAME}}|${{ secrets.DB_INSTANCE_CONNECTION_NAME }}|g" cloud-run-service.yaml
+          sed -i "s|{{DB_NAME}}|${{ secrets.DB_NAME }}|g" cloud-run-service.yaml
+          sed -i "s|{{DB_USER}}|${{ secrets.DB_USER }}|g" cloud-run-service.yaml
+          sed -i "s|{{DB_PASSWORD}}|${{ secrets.DB_PASSWORD }}|g" cloud-run-service.yaml
+          sed -i "s|{{LOKI_HOST}}|${{ secrets.LOKI_HOST }}|g" cloud-run-service.yaml
+          sed -i "s|{{LOKI_PORT}}|${{ secrets.LOKI_PORT }}|g" cloud-run-service.yaml
+          echo "Configuration file updated"
+
+      # 9. Déploiement sur Cloud Run
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run services replace cloud-run-service.yaml \
+            --region=${{ secrets.GCP_REGION }}
+          echo "Service deployed to Cloud Run"
+
+      - name: Allow unauthenticated access
+        run: |
+          gcloud run services add-iam-policy-binding ${{ env.CLOUD_RUN_SERVICE_NAME }} \
+            --region=${{ secrets.GCP_REGION }} \
+            --member="allUsers" \
+            --role="roles/run.invoker"
+          echo "Public access configured"
+
+      - name: Get service URL
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.CLOUD_RUN_SERVICE_NAME }} \
+            --region=${{ secrets.GCP_REGION }} \
+            --format='value(status.url)')
+          echo "Service deployed at: ${SERVICE_URL}"
+          echo "Health check: ${SERVICE_URL}/health"

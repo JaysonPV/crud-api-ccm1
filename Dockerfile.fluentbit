@@ -1,0 +1,15 @@
+FROM fluent/fluent-bit:4.0.13
+
+# Copier les fichiers de configuration
+COPY fluent-bit.conf /fluent-bit/etc/fluent-bit.conf
+COPY parsers.conf /fluent-bit/etc/parsers.conf
+
+# S'assurer que Fluent Bit a les permissions pour lire les logs
+USER root
+RUN mkdir -p /var/logs/crud && \
+    chmod 755 /var/logs/crud
+
+USER fluent-bit
+
+# Commande par défaut
+CMD ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/etc/fluent-bit.conf"]
