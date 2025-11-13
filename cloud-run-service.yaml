@@ -7,6 +7,7 @@ metadata:
   annotations:
     run.googleapis.com/ingress: all
     run.googleapis.com/ingress-status: all
+    run.googleapis.com/launch-stage: BETA
 spec:
   template:
     metadata:
@@ -15,7 +16,6 @@ spec:
         autoscaling.knative.dev/maxScale: '10'
         run.googleapis.com/cloudsql-instances: {{DB_INSTANCE_CONNECTION_NAME}}
         run.googleapis.com/execution-environment: gen2
-        run.googleapis.com/launch-stage: BETA
     spec:
       containerConcurrency: 80
       timeoutSeconds: 300
