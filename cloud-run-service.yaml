@@ -81,8 +81,6 @@ spec:
           limits:
             cpu: "250m"
             memory: "256Mi"
-        securityContext:
-          runAsNonRoot: true
 
       # Conteneur sidecar - Fluent Bit pour les logs
       - name: fluent-bit
@@ -95,9 +93,7 @@ spec:
         - name: LOKI_JOB_LABEL
           value: "crud-api-cloudrun"
         - name: HOSTNAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
+          value: "crud-api-cloudrun"
         resources:
           limits:
             cpu: "250m"
