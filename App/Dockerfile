@@ -5,10 +5,6 @@ RUN apt-get update && \
     apt-get install -y nginx curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Crée un utilisateur non-root
-RUN groupadd --system appgroup && \
-    useradd --system --gid appgroup --create-home --shell /bin/sh appuser
-
 # Création répertoire app
 WORKDIR /usr/src/app
 
@@ -21,8 +17,6 @@ COPY . .
 
 # Donner les droits d'exécution à start.sh
 RUN chmod +x start.sh
-
-USER appuser
 
 # Expose le port (sera remplacé par la variable PORT de Cloud Run)
 EXPOSE 8080

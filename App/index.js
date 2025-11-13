@@ -5,9 +5,20 @@ const fs = require('fs').promises;
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = 3000;
+
+let dbReady = false;
 
 app.use(express.json());
+
+app.get('/healthz', (req, res) => {
+	res.status(200).json({
+		success: true,
+		status: 'ready',
+		timestamp: new Date().toISOString(),
+		message: 'Application is running'
+	});
+});
 
 const dbConfig = {
 	host: process.env.DB_HOST || '127.0.0.1',
@@ -54,17 +65,9 @@ async function initDatabase() {
 			config: { host: dbConfig.host, database: dbConfig.database } 
 		});
 		
-		pool = mysql.createPool({
-			...dbConfig,
-			waitForConnections: true,
-			connectionLimit: 10,
-			queueLimit: 0
-		});
-		
-		// Test de connexion
+		pool = mysql.createPool(dbConfig);
 		await pool.execute('SELECT 1');
 
-		// Créer la table si elle n'existe pas
 		await pool.execute(`
 			CREATE TABLE IF NOT EXISTS users (
 				uuid VARCHAR(36) PRIMARY KEY,
@@ -76,17 +79,52 @@ async function initDatabase() {
 			)
 		`);
 
-		dbInitialized = true;
+		dbReady = true;
 		await log('INFO', 'Base de données initialisée avec succès', { table: 'users' });
-		return true;
 	} catch (error) {
+		dbReady = false;
 		await log('ERROR', 'Erreur lors de l\'initialisation de la base de données', { 
 			error: error.message,
 			code: error.code 
 		});
-		return false;
+		
+		// Retry après 10 secondes
+		console.log('⚠️  Base de données non disponible, retry dans 10s...');
+		setTimeout(initDatabase, 10000);
 	}
 }
+
+// Middleware pour vérifier si la DB est prête (à ajouter AVANT les routes API)
+function requireDB(req, res, next) {
+	if (!dbReady || !pool) {
+		return res.status(503).json({
+			success: false,
+			error: 'Service temporairement indisponible - base de données en cours d\'initialisation'
+		});
+	}
+	next();
+}
+
+// Appliquer le middleware à toutes les routes /api/*
+app.use('/api/*', requireDB);
+
+// Modifier le démarrage du serveur (remplacer le code existant à la fin du fichier)
+app.listen(PORT, () => {
+	console.log(`✅ Serveur HTTP démarré sur le port ${PORT}`);
+	console.log(`📍 Health check: http://localhost:${PORT}/health`);
+	console.log(`📍 API Users: http://localhost:${PORT}/api/users`);
+	
+	log('INFO', 'Application démarrée avec succès', { 
+		port: PORT,
+		environment: process.env.NODE_ENV || 'development'
+	});
+	
+	// Initialiser la DB en arrière-plan (non-bloquant)
+	console.log('🔄 Initialisation de la base de données...');
+	initDatabase().catch(err => {
+		console.error('Erreur lors de l\'init DB:', err);
+	});
+});
 
 function validateUser(userData) {
 	const { fullname, study_level, age } = userData;
@@ -114,36 +152,119 @@ function validateUser(userData) {
 	};
 }
 
-// HEALTH CHECK - DOIT REPONDRE RAPIDEMENT
-app.get('/health', async (req, res) => {
-	// Toujours répondre 200 si l'API est up
-	if (!dbInitialized || !pool) {
-		return res.status(200).json({
-			success: true,
-			status: 'initializing',
-			message: 'API is up, database initializing'
-		});
-	}
-
+app.get('/healthz', async (req, res) => {
+	const startTime = Date.now();
+	
 	try {
-		// Test rapide de la DB avec timeout
-		await Promise.race([
-			pool.execute('SELECT 1'),
-			new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
-		]);
+		await log('INFO', 'Healthz check demandé (startup)', { 
+			endpoint: '/healthz',
+			method: 'GET'
+		});
+
+		const processingTime = Date.now() - startTime;
+		
+		await log('INFO', 'Healthz check réussi', { 
+			endpoint: '/healthz',
+			method: 'GET',
+			status: 'ready'
+		}, processingTime);
 
 		res.status(200).json({
 			success: true,
-			status: 'healthy',
-			database: 'connected'
+			status: 'ready',
+			timestamp: new Date().toISOString(),
+			message: 'Application is running'
 		});
 	} catch (error) {
-		// Même en cas d'erreur DB, on répond 200 pour que le conteneur démarre
-		res.status(200).json({
-			success: true,
-			status: 'degraded',
-			database: 'unavailable',
-			message: 'API is up but database connection failed'
+		const processingTime = Date.now() - startTime;
+		
+		await log('ERROR', 'Healthz check échoué', { 
+			endpoint: '/healthz',
+			method: 'GET',
+			error: error.message,
+			status: 'error'
+		}, processingTime);
+
+		res.status(500).json({
+			success: false,
+			status: 'error',
+			timestamp: new Date().toISOString(),
+			error: 'Internal error'
+		});
+	}
+});
+
+// HEALTH CHECK - DOIT REPONDRE RAPIDEMENT
+// Remplacer le endpoint /health existant par celui-ci
+app.get('/health', async (req, res) => {
+	const startTime = Date.now();
+	const delay = parseInt(req.query.delay) || 0;
+	
+	try {
+		await log('INFO', 'Health check demandé', { 
+			endpoint: '/health',
+			method: 'GET',
+			delay,
+			dbReady
+		});
+
+		if (delay > 0) {
+			await new Promise(resolve => setTimeout(resolve, delay));
+		}
+
+		// Vérifier la DB si elle est marquée comme prête
+		let dbStatus = 'initializing';
+		if (dbReady && pool) {
+			try {
+				await pool.execute('SELECT 1');
+				dbStatus = 'operational';
+			} catch (err) {
+				dbStatus = 'unavailable';
+				dbReady = false;
+				// Relancer l'init
+				setTimeout(initDatabase, 1000);
+			}
+		}
+
+		const processingTime = Date.now() - startTime;
+		const isHealthy = dbStatus === 'operational';
+		
+		await log('INFO', 'Health check terminé', { 
+			endpoint: '/health',
+			method: 'GET',
+			status: isHealthy ? 'healthy' : 'degraded',
+			dbStatus
+		}, processingTime);
+
+		res.status(isHealthy ? 200 : 503).json({
+			success: isHealthy,
+			status: isHealthy ? 'healthy' : 'degraded',
+			timestamp: new Date().toISOString(),
+			services: {
+				api: 'operational',
+				database: dbStatus
+			}
+		});
+	} catch (error) {
+		const processingTime = Date.now() - startTime;
+		
+		await log('ERROR', 'Health check échoué', { 
+			endpoint: '/health',
+			method: 'GET',
+			error: error.message,
+			code: error.code,
+			status: 'unhealthy'
+		}, processingTime);
+
+		res.status(503).json({
+			success: false,
+			status: 'unhealthy',
+			timestamp: new Date().toISOString(),
+			services: {
+				api: 'operational',
+				database: 'unavailable'
+			},
+			error: 'Database connection failed'
 		});
 	}
 });
@@ -523,27 +644,6 @@ app.use((req, res) => {
 		success: false,
 		error: 'Route non trouvée' 
 	});
-});
-
-// Démarrer le serveur AVANT d'initialiser la DB
-const server = app.listen(PORT, async () => {
-	console.log(`✅ Serveur HTTP démarré sur le port ${PORT}`);
-	console.log(`📍 Health check: http://localhost:${PORT}/health`);
-	console.log(`📍 API Users: http://localhost:${PORT}/api/users`);
-	
-	// Initialiser la DB après que le serveur soit up
-	console.log('🔄 Initialisation de la base de données...');
-	const success = await initDatabase();
-	
-	if (success) {
-		console.log('✅ Base de données connectée');
-	} else {
-		console.warn('⚠️  Base de données non disponible, retry dans 10s...');
-		// Retry après 10 secondes
-		setTimeout(async () => {
-			await initDatabase();
-		}, 10000);
-	}
 });
 
 process.on('SIGTERM', async () => {

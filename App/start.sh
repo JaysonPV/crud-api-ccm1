@@ -40,11 +40,15 @@ http {
         error_page 500 502 503 504 = @server_error;
 
         location @not_found {
+            access_log /var/logs/crud/access.log json_combined;
+            error_log /var/logs/crud/error.log warn;
             add_header Content-Type application/json;
             return 404 '{"success":false,"error":"Not Found","status":404}';
         }
 
         location @server_error {
+            access_log /var/logs/crud/access.log json_combined;
+            error_log /var/logs/crud/error.log warn;
             add_header Content-Type application/json;
             return 500 '{"success":false,"error":"Internal Server Error","status":500}';
         }
@@ -66,39 +70,51 @@ http {
 }
 EOF
 
-echo "✅ Nginx configuré pour écouter sur le port ${PORT}"
+echo "✓ Nginx configuré pour le port ${PORT}"
 
-# Lancer l'application Node.js en arrière-plan
-echo "🚀 Démarrage de Node.js sur le port ${NODE_PORT}..."
-node index.js &
+# Démarrer Node.js en arrière-plan
+echo "===== Démarrage Node.js ====="
+node index.js > /var/logs/crud/app.log 2>&1 &
 NODE_PID=$!
+echo "✓ Node.js lancé (PID: $NODE_PID)"
 
-echo "⏳ Attente du démarrage de Node.js (PID: ${NODE_PID})..."
-
-# Attendre que Node.js soit prêt (max 30 secondes)
-MAX_WAIT=30
+# Attendre que Node.js réponde (max 60 secondes)
+echo "⏳ Attente de Node.js..."
 COUNTER=0
+MAX_WAIT=60
+
 while [ $COUNTER -lt $MAX_WAIT ]; do
-    if curl -s http://127.0.0.1:${NODE_PORT}/health > /dev/null 2>&1; then
-        echo "✅ Node.js est prêt !"
+    if curl -sf http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
+        echo "✅ Node.js est prêt après ${COUNTER}s"
         break
     fi
-    echo "⏳ Attente... ($COUNTER/$MAX_WAIT)"
+    
+    # Vérifier si le processus Node est toujours en vie
+    if ! kill -0 $NODE_PID 2>/dev/null; then
+        echo "❌ Node.js s'est arrêté"
+        echo "Derniers logs:"
+        tail -50 /var/logs/crud/app.log
+        exit 1
+    fi
+    
     sleep 1
     COUNTER=$((COUNTER + 1))
     
-    # Vérifier que Node.js tourne toujours
-    if ! kill -0 $NODE_PID 2>/dev/null; then
-        echo "❌ Node.js s'est arrêté prématurément"
-        exit 1
+    # Afficher un message tous les 10s
+    if [ $((COUNTER % 10)) -eq 0 ]; then
+        echo "   Toujours en attente... (${COUNTER}s/${MAX_WAIT}s)"
     fi
 done
 
+# Timeout check
 if [ $COUNTER -eq $MAX_WAIT ]; then
-    echo "❌ Timeout: Node.js n'a pas démarré dans les temps"
+    echo "❌ Timeout après ${MAX_WAIT}s"
+    echo "Logs de Node.js:"
+    cat /var/logs/crud/app.log
     exit 1
 fi
 
-# Lancer Nginx au premier plan
-echo "🌐 Démarrage de Nginx sur le port ${PORT}..."
+# Démarrer Nginx au premier plan
+echo "===== Démarrage Nginx ====="
+echo "🚀 Nginx sur le port ${PORT}"
 exec nginx -g "daemon off;"
