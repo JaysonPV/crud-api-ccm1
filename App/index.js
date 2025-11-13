@@ -448,60 +448,28 @@ app.delete('/api/users/:uuid', async (req, res) => {
 });
 
 app.get('/health', async (req, res) => {
-	const startTime = Date.now();
-	const delay = parseInt(req.query.delay) || 0;
-	
-	try {
-		await log('INFO', 'Health check demandé', { 
-			endpoint: '/health',
-			method: 'GET',
-			delay
-		});
+  const status = pool ? 'connected' : 'initializing';
+  if (!pool) {
+    return res.status(200).json({
+      success: true,
+      status: 'initializing',
+      message: 'Database not yet connected, but API is up'
+    });
+  }
 
-		if (delay > 0) {
-			await new Promise(resolve => setTimeout(resolve, delay));
-		}
-
-		await pool.execute('SELECT 1');
-		const processingTime = Date.now() - startTime;
-		
-		await log('INFO', 'Health check réussi', { 
-			endpoint: '/health',
-			method: 'GET',
-			status: 'healthy'
-		}, processingTime);
-
-		res.status(200).json({
-			success: true,
-			status: 'healthy',
-			timestamp: new Date().toISOString(),
-			services: {
-				api: 'operational',
-				database: 'operational'
-			}
-		});
-	} catch (error) {
-		const processingTime = Date.now() - startTime;
-		
-		await log('ERROR', 'Health check échoué', { 
-			endpoint: '/health',
-			method: 'GET',
-			error: error.message,
-			code: error.code,
-			status: 'unhealthy'
-		}, processingTime);
-
-		res.status(503).json({
-			success: false,
-			status: 'unhealthy',
-			timestamp: new Date().toISOString(),
-			services: {
-				api: 'operational',
-				database: 'unavailable'
-			},
-			error: 'Database connection failed'
-		});
-	}
+  try {
+    await pool.execute('SELECT 1');
+    res.status(200).json({
+      success: true,
+      status: 'healthy'
+    });
+  } catch (error) {
+    res.status(503).json({
+      success: false,
+      status: 'unhealthy',
+      error: error.message
+    });
+  }
 });
 
 app.use((req, res) => {
@@ -517,22 +485,20 @@ app.use((req, res) => {
 	});
 });
 
-app.listen(PORT, async () => {
-	try {
-		await initDatabase();
-		await log('INFO', 'Application démarrée avec succès', { 
-			port: PORT,
-			environment: process.env.NODE_ENV || 'development'
-		});
-		
-		console.log(`\nServeur démarré sur le port ${PORT}`);
-		console.log(`Health check: http://localhost:${PORT}/health`);
-		console.log(`API Users: http://localhost:${PORT}/api/users`);
-		console.log(`Logs: ${APP_LOG_FILE}\n`);
-	} catch (error) {
-		console.error('Erreur fatale au démarrage:', error);
-		process.exit(1);
-	}
+app.listen(PORT, () => {
+  console.log(`Serveur en écoute sur le port ${PORT}`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`API Users: http://localhost:${PORT}/api/users`);
+
+  // Connecte la base après le démarrage du serveur
+  initDatabase()
+    .then(() => {
+      console.log('✅ Base de données initialisée avec succès');
+    })
+    .catch(async (error) => {
+      console.error('❌ Erreur lors de l’initialisation de la base de données :', error.message);
+      await log('ERROR', 'Erreur fatale au démarrage', { error: error.message });
+    });
 });
 
 process.on('SIGTERM', async () => {
