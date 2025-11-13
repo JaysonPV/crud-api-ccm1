@@ -15,6 +15,11 @@ RUN npm install
 # Copier le code source
 COPY . .
 
+# Créer le répertoire de logs avec les bonnes permissions
+RUN mkdir -p /var/logs/crud && \
+    chown -R node:node /var/logs/crud && \
+    chmod -R 755 /var/logs/crud
+
 # Donner les droits d'exécution à start.sh
 RUN chmod +x start.sh
 

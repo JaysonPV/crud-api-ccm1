@@ -27,7 +27,7 @@ const dbConfig = {
 	database: process.env.DB_NAME || 'crud_app'
 };
 
-const LOG_DIR = '/tmp/logs/crud';
+const LOG_DIR = '/var/logs/crud';
 const APP_LOG_FILE = path.join(LOG_DIR, 'app.log');
 
 let pool;

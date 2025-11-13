@@ -1,10 +1,6 @@
 #!/bin/bash
 set -e
 
-# Créer les répertoires logs
-mkdir -p /var/logs/crud
-mkdir -p /tmp/logs/crud
-
 # Définir le port par défaut si non défini
 export PORT=${PORT:-8080}
 export NODE_PORT=3000
