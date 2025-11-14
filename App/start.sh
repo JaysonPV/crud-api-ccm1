@@ -70,7 +70,8 @@ echo "✓ Nginx configuré pour le port ${PORT}"
 
 # Attendre que Cloud SQL Proxy soit prêt
 echo "⏳ Attente que Cloud SQL Proxy soit prêt..."
-until nc -z 127.0.0.1 3306; do
+until mysqladmin ping -h 127.0.0.1 --silent; do
+  echo "Waiting for MySQL..."
   sleep 1
 done
 echo "✅ Cloud SQL Proxy prêt"
