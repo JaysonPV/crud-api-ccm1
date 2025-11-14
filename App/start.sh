@@ -68,14 +68,6 @@ EOF
 
 echo "✓ Nginx configuré pour le port ${PORT}"
 
-# Attendre que Cloud SQL Proxy soit prêt
-# echo "⏳ Attente que Cloud SQL Proxy soit prêt..."
-# until nc -z 127.0.0.1 3306; do
-#   sleep 1
-# done
-
-# echo "✅ Cloud SQL Proxy prêt"
-
 # Démarrer Node.js en arrière-plan
 echo "===== Démarrage Node.js ====="
 node index.js > /var/logs/crud/app.log 2>&1 &
