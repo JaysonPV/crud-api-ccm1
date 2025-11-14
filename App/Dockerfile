@@ -1,9 +1,9 @@
 FROM node:20
 
 # Installer Nginx et curl
-# RUN apt-get update && \
-#     apt-get install -y nginx curl && \
-#     rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y nginx curl && \
+    rm -rf /var/lib/apt/lists/*
 
 # Création répertoire app
 WORKDIR /usr/src/app
@@ -23,14 +23,12 @@ RUN mkdir -p /var/logs/crud && \
 # Donner les droits d'exécution à start.sh
 RUN chmod +x start.sh
 
-ENV PORT=8080
-
 # Expose le port (sera remplacé par la variable PORT de Cloud Run)
 EXPOSE 8080
 
 # Healthcheck - utilise la variable PORT si définie, sinon 80
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:${PORT}/health || exit 1
+  CMD curl -f http://localhost:${PORT:-80}/health || exit 1
 
 # Commande de démarrage
 CMD ["/bin/bash", "./start.sh"]

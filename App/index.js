@@ -5,7 +5,7 @@ const fs = require('fs').promises;
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = 3000;
 
 let dbReady = false; // UNE SEULE VARIABLE
 
