@@ -21,6 +21,8 @@ RUN mkdir -p /var/logs/crud && \
     chmod -R 755 /var/logs/crud
 
 # Donner les droits d'exécution à start.sh
+RUN apk add --no-cache netcat-openbsd
+
 RUN chmod +x start.sh
 
 # Expose le port (sera remplacé par la variable PORT de Cloud Run)
