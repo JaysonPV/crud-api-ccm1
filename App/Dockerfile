@@ -2,7 +2,7 @@ FROM node:20
 
 # Installer Nginx et curl
 RUN apt-get update && \
-    apt-get install -y nginx curl && \
+    apt-get install -y nginx curl netcat && \
     rm -rf /var/lib/apt/lists/*
 
 # Création répertoire app
@@ -21,8 +21,6 @@ RUN mkdir -p /var/logs/crud && \
     chmod -R 755 /var/logs/crud
 
 # Donner les droits d'exécution à start.sh
-RUN apk add --no-cache netcat-openbsd
-
 RUN chmod +x start.sh
 
 # Expose le port (sera remplacé par la variable PORT de Cloud Run)
