@@ -2,7 +2,7 @@ FROM node:20
 
 # Installer Nginx et curl
 RUN apt-get update && \
-    apt-get install -y nginx curl default-mysql-client && \
+    apt-get install -y nginx curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Création répertoire app
